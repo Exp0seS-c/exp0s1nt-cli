@@ -1,0 +1,124 @@
+name: Build Exp0s1nt Linux Binary
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'Exp0s1nt-cli.py'
+      - '.github/workflows/build_linux.yml'
+  workflow_dispatch:   # allows manual trigger from GitHub UI
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ─────────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # ── 3. Install dependencies ──────────────────────────────────────────────
+      - name: Install build tools and runtime deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pyarmor requests rich
+
+      # ── 4. PyArmor obfuscation ───────────────────────────────────────────────
+      - name: Obfuscate source with PyArmor
+        run: |
+          mkdir -p _build_linux/obfuscated
+          python -m pyarmor.cli gen \
+            --output _build_linux/obfuscated \
+            --obf-module 1 \
+            --obf-code 1 \
+            --private \
+            Exp0s1nt-cli.py
+
+      # ── 5. Write anti-debug runtime hook ────────────────────────────────────
+      - name: Write anti-debug hook
+        run: |
+          cat > _build_linux/hook_antidebug.py << 'EOF'
+          import os, sys, ctypes, ctypes.util
+
+          def _detect_debugger_linux():
+              try:
+                  with open("/proc/self/status", "r") as f:
+                      for line in f:
+                          if line.startswith("TracerPid:"):
+                              if int(line.split(":")[1].strip()) != 0:
+                                  return True
+              except Exception:
+                  pass
+              try:
+                  libc_name = ctypes.util.find_library("c")
+                  if libc_name:
+                      libc = ctypes.CDLL(libc_name, use_errno=True)
+                      if libc.ptrace(0, 0, 0, 0) == -1:
+                          return True
+              except Exception:
+                  pass
+              return False
+
+          def _detect_sandbox():
+              try:
+                  import multiprocessing
+                  if multiprocessing.cpu_count() < 2:
+                      return True
+              except Exception:
+                  pass
+              try:
+                  with open("/proc/meminfo", "r") as f:
+                      for line in f:
+                          if line.startswith("MemTotal:"):
+                              if int(line.split()[1]) < 2097152:
+                                  return True
+                              break
+              except Exception:
+                  pass
+              for var in ["CUCKOO", "SANDBOX", "ANALYSIS_ENV", "CAPE_ANALYSIS"]:
+                  if os.environ.get(var):
+                      return True
+              return False
+
+          if _detect_debugger_linux() or _detect_sandbox():
+              os._exit(0)
+          EOF
+
+      # ── 6. PyInstaller bundle ────────────────────────────────────────────────
+      - name: Build with PyInstaller
+        run: |
+          PYARMOR_RT="_build_linux/obfuscated/pyarmor_runtime_000000"
+          python -m PyInstaller \
+            --onefile \
+            --console \
+            --name=Exp0s1nt \
+            --runtime-hook="_build_linux/hook_antidebug.py" \
+            --add-data="${PYARMOR_RT}:pyarmor_runtime_000000" \
+            --strip \
+            --noupx \
+            --python-option=O \
+            --distpath=_dist_linux \
+            --workpath=_build_linux/pyinstaller_work \
+            --specpath=_build_linux \
+            --exclude-module=tkinter \
+            --exclude-module=unittest \
+            --exclude-module=email \
+            --exclude-module=xml \
+            --exclude-module=pydoc \
+            --exclude-module=doctest \
+            "_build_linux/obfuscated/Exp0s1nt-cli.py"
+          chmod +x _dist_linux/Exp0s1nt
+
+      # ── 7. Upload artifact ───────────────────────────────────────────────────
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: Exp0s1nt-linux
+          path: _dist_linux/Exp0s1nt
+          retention-days: 30
