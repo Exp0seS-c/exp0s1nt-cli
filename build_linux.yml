@@ -5,7 +5,7 @@ on:
     branches: [ main, master ]
     paths:
       - 'Exp0s1nt-cli.py'
-      - '.github/workflows/build_linux.yml'
+      - '.github/build_linux.yml'
   workflow_dispatch:  
 
 jobs:
